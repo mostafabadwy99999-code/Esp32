@@ -1,0 +1,73 @@
+name: Build ESP32 Firmware
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: فك ضغط ملف المشروع لو موجود (zip في جذر الريبو)
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -iname "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Found zip: $ZIP_FILE - extracting..."
+            unzip -o "$ZIP_FILE" -d .
+          else
+            echo "No zip file found in repo root, assuming project already extracted."
+          fi
+
+      - name: تحديد فولدر مشروع PlatformIO تلقائيًا (بحث عن platformio.ini)
+        id: findproj
+        run: |
+          PROJ_DIR=$(find . -maxdepth 3 -iname "platformio.ini" -not -path "*/.git/*" | head -n 1 | xargs dirname)
+          if [ -z "$PROJ_DIR" ]; then
+            echo "::error::مفيش أي ملف platformio.ini اتلاقى في الريبو"
+            exit 1
+          fi
+          echo "Found PlatformIO project at: $PROJ_DIR"
+          echo "dir=$PROJ_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: تحديد اسم البيئة (env) تلقائيًا من platformio.ini
+        id: findenv
+        run: |
+          ENV_NAME=$(grep -m1 -oP '(?<=\[env:).*(?=\])' "${{ steps.findproj.outputs.dir }}/platformio.ini")
+          if [ -z "$ENV_NAME" ]; then
+            echo "::error::مفيش [env:...] في platformio.ini"
+            exit 1
+          fi
+          echo "Found env: $ENV_NAME"
+          echo "name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install -U platformio
+
+      - name: Build firmware (ESP32)
+        working-directory: ${{ steps.findproj.outputs.dir }}
+        run: pio run -e ${{ steps.findenv.outputs.name }}
+
+      - name: Upload firmware.bin as downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-bin
+          path: ${{ steps.findproj.outputs.dir }}/.pio/build/${{ steps.findenv.outputs.name }}/firmware.bin
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload full build folder (bootloader / partitions لو محتاجهم)
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-build-output
+          path: ${{ steps.findproj.outputs.dir }}/.pio/build/${{ steps.findenv.outputs.name }}/
+          if-no-files-found: warn
+          retention-days: 1
